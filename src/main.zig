@@ -112,7 +112,8 @@ const Context = struct {
     locations: std.ArrayList([]const u8),
 
     pub fn init(allocator: std.mem.Allocator) !Context {
-        const stats = std.StringHashMap(Stats).init(allocator);
+        var stats = std.StringHashMap(Stats).init(allocator);
+        try stats.ensureTotalCapacity(1024);
         const locations = std.ArrayList([]const u8).init(allocator);
         return Context{
             .stats = stats,
@@ -139,26 +140,27 @@ fn run_worker(
 
     var pos: usize = 0;
     while (pos < chunk.len) {
-        const line_end = std.mem.indexOfScalarPos(
+        const separator_pos = std.mem.indexOfScalarPos(
             u8,
             chunk,
             pos,
+            ';',
+        ) orelse continue;
+
+        const location = chunk[pos..separator_pos];
+
+        const end_pos = std.mem.indexOfScalarPos(
+            u8,
+            chunk,
+            separator_pos + 1,
             '\n',
         ) orelse chunk.len;
 
-        const line = chunk[pos..line_end];
+        const temperature = parse_float(chunk[separator_pos + 1 .. end_pos]);
 
-        pos = line_end + 1;
+        pos = end_pos + 1;
 
-        if (line.len == 0) continue;
-
-        var parts = std.mem.splitScalar(u8, line, ';');
-
-        const location = parts.next() orelse continue;
-        const temperature_str = parts.next() orelse continue;
-        const temperature = std.fmt.parseFloat(f32, temperature_str) catch continue;
-
-        const stats = worker_context.stats.getOrPut(location) catch unreachable;
+        const stats = worker_context.stats.getOrPutAssumeCapacity(location);
 
         if (stats.found_existing) {
             stats.value_ptr.add(temperature);
