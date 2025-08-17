@@ -185,6 +185,28 @@ fn run_worker(
     }
 }
 
+fn parse_float(input: []const u8) f32 {
+    var number: i32 = 0;
+    var sign: u8 = 0;
+
+    for (input) |c| {
+        if (c == '-') {
+            sign = 1;
+            continue;
+        }
+
+        if (c >= '0' and c <= '9') {
+            number *= 10;
+            number += c - '0';
+        }
+
+        if (c == '\n') break;
+    }
+
+    number = if (sign == 1) -number else number;
+    return @as(f32, @floatFromInt(number)) / 10;
+}
+
 fn sort_locations(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
