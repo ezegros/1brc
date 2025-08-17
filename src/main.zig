@@ -149,16 +149,9 @@ fn run_worker(
 
         const location = chunk[pos..separator_pos];
 
-        const end_pos = std.mem.indexOfScalarPos(
-            u8,
-            chunk,
-            separator_pos + 1,
-            '\n',
-        ) orelse chunk.len;
+        pos = separator_pos + 1;
 
-        const temperature = parse_float(chunk[separator_pos + 1 .. end_pos]);
-
-        pos = end_pos + 1;
+        const temperature = parse_float(chunk, &pos);
 
         const stats = worker_context.stats.getOrPutAssumeCapacity(location);
 
@@ -187,22 +180,21 @@ fn run_worker(
     }
 }
 
-fn parse_float(input: []const u8) f32 {
+fn parse_float(input: []const u8, pos: *usize) f32 {
     var number: i32 = 0;
     var sign: u8 = 0;
 
-    for (input) |c| {
-        if (c == '-') {
-            sign = 1;
-            continue;
+    for (0..6) |i| {
+        const c = input[pos.* + i];
+        switch (c) {
+            '0'...'9' => number = number * 10 + (c - '0'),
+            '-' => sign = 1,
+            '\n' => {
+                pos.* += i + 1;
+                break;
+            },
+            else => {},
         }
-
-        if (c >= '0' and c <= '9') {
-            number *= 10;
-            number += c - '0';
-        }
-
-        if (c == '\n') break;
     }
 
     number = if (sign == 1) -number else number;
