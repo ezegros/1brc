@@ -5,19 +5,29 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
-    const exe = b.addExecutable(.{
-        .name = "obrc",
+    const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.linkLibC();
+
+    if (optimize == .ReleaseFast) {
+        exe_mod.strip = true;
+    }
+
+    const exe = b.addExecutable(.{
+        .name = "obrc",
+        .root_module = exe_mod,
+    });
+
+    const sample_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const sample = b.addExecutable(.{
         .name = "create_sample",
-        .root_source_file = null,
-        .target = target,
-        .optimize = optimize,
+        .root_module = sample_mod,
     });
     sample.addCSourceFile(.{
         .file = b.path("src/create_sample.c"),
