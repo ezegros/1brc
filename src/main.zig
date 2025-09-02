@@ -73,7 +73,7 @@ pub fn main() !void {
     );
 
     for (entries) |entry| {
-        if (entry.key_len == 0) continue;
+        if (entry.key.len == 0) continue;
         const stats = entry.value;
 
         const sum = @as(f32, @floatFromInt(stats.sum)) / 10.0;
