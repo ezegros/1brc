@@ -36,7 +36,7 @@ pub fn main() !void {
 
     var mutex: std.Thread.Mutex = .{};
 
-    const worker_count = try std.Thread.getCpuCount() - 1;
+    const worker_count = try std.Thread.getCpuCount();
 
     var wait_group: std.Thread.WaitGroup = .{};
     wait_group.startMany(worker_count);
