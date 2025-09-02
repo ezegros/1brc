@@ -31,7 +31,8 @@ pub fn main() !void {
     var thread_pool: std.Thread.Pool = undefined;
     try thread_pool.init(.{ .allocator = gpa });
 
-    var context = try Context.init();
+    var context = try Context.init(gpa);
+    defer context.deinit(gpa);
 
     var mutex: std.Thread.Mutex = .{};
 
@@ -129,11 +130,15 @@ const Stats = struct {
 const Context = struct {
     stats: StatsHashMap,
 
-    pub fn init() !Context {
-        const stats = StatsHashMap.init();
+    pub fn init(allocator: std.mem.Allocator) !Context {
+        const stats = StatsHashMap.init(allocator);
         return Context{
             .stats = stats,
         };
+    }
+
+    pub fn deinit(self: *Context, allocator: std.mem.Allocator) void {
+        self.stats.deinit(allocator);
     }
 };
 
@@ -145,7 +150,8 @@ fn run_worker(
 ) void {
     defer wait_group.finish();
 
-    var worker_context = Context.init() catch unreachable;
+    var worker_context = Context.init(gpa) catch unreachable;
+    defer worker_context.deinit(gpa);
 
     var pos: usize = 0;
     while (pos < chunk.len) {
@@ -157,17 +163,14 @@ fn run_worker(
 
     const entries = worker_context.stats.get_entries();
     for (entries) |entry| {
-        if (entry.key_len == 0) continue;
-
-        const location = entry.key[0..entry.key_len];
-        const stats = entry.value;
+        if (entry.key.len == 0 or entry.key.len > location_max_len) continue;
 
         mutex.lock();
 
-        if (context.stats.get(location)) |existing_stats| {
-            existing_stats.merge(stats);
+        if (context.stats.get(entry.hash)) |existing_stats| {
+            existing_stats.merge(entry.value);
         } else {
-            context.stats.put(location, stats);
+            context.stats.put(entry);
         }
 
         mutex.unlock();
@@ -195,116 +198,98 @@ fn parse_number(chunk: []const u8, pos: *usize) i64 {
 }
 
 fn sort_locations(_: void, a: StatsHashMap.Entry, b: StatsHashMap.Entry) bool {
-    return std.mem.order(u8, &a.key, &b.key) == .lt;
+    if (a.key.len == 0) return false;
+    if (b.key.len == 0) return true;
+    return std.mem.order(u8, a.key, b.key) == .lt;
 }
 
 const StatsHashMap = struct {
     const Entry = struct {
-        key: [128]u8,
-        key_len: u8,
         value: Stats,
+        key: []const u8,
         hash: u32,
     };
 
     entries: []Entry,
-    key_buffer: [128]u8,
-    key_len: u8 = 0,
 
     const prime: u32 = 0x01000193;
     const offset: u32 = 0x811c9dc5;
 
-    pub fn init() StatsHashMap {
-        var entries_list = [_]Entry{
-            .{
-                .key = undefined,
-                .key_len = 0,
+    pub fn init(allocator: std.mem.Allocator) StatsHashMap {
+        const entries = allocator.alloc(Entry, entries_size) catch unreachable;
+        for (entries) |*entry| {
+            entry.* = Entry{
                 .value = Stats.init(),
+                .key = "",
                 .hash = 0,
-            },
-        } ** entries_size;
+            };
+        }
         return StatsHashMap{
-            .key_buffer = [_]u8{0} ** 128,
-            .entries = &entries_list,
+            .entries = entries,
         };
     }
 
-    pub fn get(self: *StatsHashMap, key: []const u8) ?*Stats {
-        const hash = StatsHashMap.get_hash(key);
+    pub fn deinit(self: *StatsHashMap, allocator: std.mem.Allocator) void {
+        allocator.free(self.entries);
+        self.entries = &.{};
+    }
+
+    pub fn get(self: *StatsHashMap, hash: u32) ?*Stats {
         var index = hash & (entries_size - 1);
-        var entry = &self.entries[index];
-
-        while (entry.key_len != 0) {
-            if (entry.hash == hash) {
-                return &entry.value;
-            }
+        while (true) {
+            const entry = &self.entries[index];
+            if (entry.key.len == 0) return null;
+            if (entry.hash == hash) return &entry.value;
             index = (index + 1) & (entries_size - 1);
-            entry = &self.entries[index];
         }
-
-        return null;
     }
 
     pub fn get_or_put(self: *StatsHashMap, chunk: []const u8, position: *usize) *Stats {
-        const key = self.parse_key(chunk, position);
-
-        if (self.get(key)) |existing_stats| {
-            return existing_stats;
-        }
-
-        const hash = StatsHashMap.get_hash(key);
-        const index = hash & (entries_size - 1);
-        var entry = &self.entries[index];
-
-        @memcpy(entry.key[0..key.len], key);
-        entry.key_len = @intCast(key.len);
-        entry.hash = hash;
-
-        return &entry.value;
-    }
-
-    pub fn put(self: *StatsHashMap, key: []const u8, value: Stats) void {
-        const hash = StatsHashMap.get_hash(key);
-        var index = hash & (entries_size - 1);
-        var entry = &self.entries[index];
-
-        while (entry.key_len != 0) {
-            if (entry.hash == hash) {
-                entry.value.merge(value);
-                return;
-            }
-            index = (index + 1) & (entries_size - 1);
-            entry = &self.entries[index];
-        }
-
-        @memcpy(entry.key[0..key.len], key);
-        entry.key_len = @intCast(key.len);
-        entry.value = value;
-        entry.hash = hash;
-    }
-
-    pub fn get_entries(self: *StatsHashMap) []Entry {
-        return self.entries;
-    }
-
-    fn get_hash(key: []const u8) u32 {
+        var key_len: u8 = 0;
         var hash: u32 = offset;
-        for (key) |b| {
-            hash ^= b;
-            hash *%= prime;
-        }
-        return hash;
-    }
+        const start = position.*;
 
-    fn parse_key(self: *StatsHashMap, chunk: []const u8, position: *usize) []const u8 {
         for (0..location_max_len) |i| {
             const c = chunk[position.* + i];
             if (c == ';') {
                 position.* += i + 1;
-                self.key_len = @intCast(i);
+                key_len = @intCast(i);
                 break;
             }
-            self.key_buffer[i] = c;
+            hash ^= c;
+            hash *%= prime;
         }
-        return self.key_buffer[0..self.key_len];
+
+        const key = chunk[start .. start + key_len];
+
+        var index = hash & (entries_size - 1);
+        while (true) {
+            var entry = &self.entries[index];
+            if (entry.key.len == 0) {
+                entry.hash = hash;
+                entry.key = key;
+                return &entry.value;
+            }
+            if (entry.hash == hash) {
+                return &entry.value;
+            }
+            index = (index + 1) & (entries_size - 1);
+        }
+    }
+
+    pub fn put(self: *StatsHashMap, new_entry: Entry) void {
+        var index = new_entry.hash & (entries_size - 1);
+        while (true) {
+            const entry = &self.entries[index];
+            if (entry.key.len == 0) {
+                self.entries[index] = new_entry;
+                return;
+            }
+            index = (index + 1) & (entries_size - 1);
+        }
+    }
+
+    pub fn get_entries(self: *StatsHashMap) []Entry {
+        return self.entries;
     }
 };
