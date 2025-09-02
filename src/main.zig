@@ -73,27 +73,32 @@ pub fn main() !void {
 
     for (entries) |entry| {
         if (entry.key_len == 0) continue;
-        const location = entry.key[0..entry.key_len];
         const stats = entry.value;
-        const avg = stats.sum / @as(f32, @floatFromInt(stats.count));
+
+        const sum = @as(f32, @floatFromInt(stats.sum)) / 10.0;
+        const min = @as(f32, @floatFromInt(stats.min)) / 10.0;
+        const max = @as(f32, @floatFromInt(stats.max)) / 10.0;
+        const count = @as(f32, @floatFromInt(stats.count));
+        const avg = sum / count;
+
         std.debug.print(
             "{s};{d:.1};{d:.1};{d:.1}\n",
-            .{ location, stats.min, avg, stats.max },
+            .{ entry.key, min, avg, max },
         );
     }
 }
 
 const Stats = struct {
-    min: f32,
-    max: f32,
-    sum: f32,
+    min: i64,
+    max: i64,
+    sum: i64,
     count: u32,
 
-    fn init(temperature: f32) Stats {
-        return Stats{
-            .min = temperature,
-            .max = temperature,
-            .sum = temperature,
+    fn init() Stats {
+        return .{
+            .min = 0,
+            .max = 0,
+            .sum = 0,
             .count = 0,
         };
     }
@@ -105,7 +110,7 @@ const Stats = struct {
         self.count += other.count;
     }
 
-    fn add(self: *Stats, temperature: f32) void {
+    fn add(self: *Stats, temperature: i64) void {
         if (self.count == 0) {
             self.min = temperature;
             self.max = temperature;
@@ -145,7 +150,7 @@ fn run_worker(
     var pos: usize = 0;
     while (pos < chunk.len) {
         const stats = worker_context.stats.get_or_put(chunk, &pos);
-        const temperature = parse_float(chunk, &pos);
+        const temperature = parse_number(chunk, &pos);
 
         stats.add(temperature);
     }
@@ -169,25 +174,24 @@ fn run_worker(
     }
 }
 
-fn parse_float(chunk: []const u8, pos: *usize) f32 {
-    var number: i32 = 0;
-    var negative = false;
+fn parse_number(chunk: []const u8, pos: *usize) i64 {
+    const start = pos.*;
+    const negative = chunk[start] == '-';
+    const offset: usize = if (negative) 1 else 0;
 
-    for (0..float_len_max) |i| {
-        const c = chunk[pos.* + i];
-        switch (c) {
-            '0'...'9' => number = number * 10 + (c - '0'),
-            '-' => negative = true,
-            '\n' => {
-                pos.* += i + 1;
-                break;
-            },
-            else => {},
-        }
+    var number: i64 = 0;
+
+    if (chunk[start + offset + 1] == '.') {
+        number = (@as(i64, chunk[start + offset]) - '0') * 10 + (@as(i64, chunk[start + offset + 2]) - '0');
+        pos.* = start + offset + 3 + 1;
+    } else {
+        number = (@as(i64, chunk[start + offset]) - '0') * 100 +
+            (@as(i64, chunk[start + offset + 1]) - '0') * 10 +
+            (@as(i64, chunk[start + offset + 3]) - '0');
+        pos.* = start + offset + 4 + 1;
     }
 
-    number = if (negative) -number else number;
-    return @as(f32, @floatFromInt(number)) / 10;
+    return if (negative) -number else number;
 }
 
 fn sort_locations(_: void, a: StatsHashMap.Entry, b: StatsHashMap.Entry) bool {
@@ -214,7 +218,7 @@ const StatsHashMap = struct {
             .{
                 .key = undefined,
                 .key_len = 0,
-                .value = Stats.init(0.0),
+                .value = Stats.init(),
                 .hash = 0,
             },
         } ** entries_size;
